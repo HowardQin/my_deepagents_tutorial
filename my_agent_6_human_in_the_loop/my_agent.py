@@ -37,7 +37,6 @@ def send_email(to: str, subject: str, body: str) -> str:
     Returns:
         Message of sending email.
     """
-    body
     return f"Sent email to {to} of subject {subject}."
 
 @tool(parse_docstring=True)
