@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import LocalShellBackend, FilesystemBackend
+from deepagents import MemoryMiddleware
 from dotenv import load_dotenv
 import requests
 from langchain_core.tools import tool
@@ -10,7 +11,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-# 这些信息以环境变量设置，这些环境变量可以写在.env中
+# 这些环境变量可以写在.env中
 agent_model = ChatOpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
     base_url=os.getenv("OPENAI_BASE_URL"),
@@ -21,9 +22,33 @@ agent_model = ChatOpenAI(
 # deepagent 需要一个文件系统存放中间结果，
 # 这里设置一个虚拟文件系统，
 # 当前目录下的 fs 作为虚拟文件系统的根目录“/”
+
 CURRENT_DIR = Path(__file__).parent.resolve()
 FS_ROOT = CURRENT_DIR / "fs"
 my_backend = LocalShellBackend(root_dir=str(FS_ROOT), virtual_mode=True)
+fs_backend = FilesystemBackend(root_dir=str(FS_ROOT), virtual_mode=True)
+
+middleware = MemoryMiddleware(
+    backend=fs_backend,
+    sources=[
+        "/AGENTS.md",
+    ],
+)
+
+@tool(parse_docstring=True)
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email.
+
+    Args:
+        to: target email address.
+        subject: topic of the email body.
+        body: content of the email.
+
+    Returns:
+        Message of sending email.
+    """
+    body
+    return f"Sent email to {to} of subject {subject}."
 
 @tool(parse_docstring=True)
 def image_gen_tool(input_desc: str, ouput_dir: str, file_name: str) -> str:
@@ -49,10 +74,11 @@ def image_gen_tool(input_desc: str, ouput_dir: str, file_name: str) -> str:
             "step": 20
         }
     )
-    # 硅基流动生成图片后，会返回图片url，我们提取这个url，然后下载图片
+    # 硅基流动生成图片后，会返回图片url，提取这个url，然后下载图片
     url = response.images[0]['url']
     # 下载图片
     response = requests.get(url)
+
     # Check if the request was successful
     if response.status_code == 200:
         # 需要将下载的图片（response.content）上传到虚拟文件系统的目录下
@@ -60,6 +86,7 @@ def image_gen_tool(input_desc: str, ouput_dir: str, file_name: str) -> str:
         return f"Successfully generated and saved image to {ouput_dir}/{file_name}.png"
     else:
         return f"Failed to generate or save image. Status code: {response.status_code}"
+
 
 # 子智能体提示词
 IMG_GEN_INSTRUCTIONS = """ 
@@ -74,20 +101,29 @@ image_gen_agent = {
     "name": "image-gen-agent",
     "description": "根据文字描述生成图像",
     "system_prompt": IMG_GEN_INSTRUCTIONS,
-    "tools": [image_gen_tool]
+    "tools": [image_gen_tool],
+    "interrupt_on": {"image_gen_tool": {"allowed_decisions": ["approve", "edit", "reject"]}}
 }
 
 agent = create_deep_agent(
     model=agent_model,
-    backend=my_backend,
     subagents=[image_gen_agent],
-    debug=True
+    backend=my_backend,
+    skills=["/skills"],
+    debug=False,
+    tools=[send_email],
+    interrupt_on={"send_email":True},
+    middleware=[middleware]
 )
 
 def main():
-    #result = agent.invoke({"messages": [{"role": "user", "content": "生成一张可爱小狗的照片"}]})
+    # memorymiddleware 确实是可以在每轮问答时动态改变system prompt，
+    # 但是为什么langsmith没有这样显示呢？
+    config = {"configurable": {"thread_id": "user_1234"}}
+    msg = {"messages": [{"role": "user", "content": "今晚吃什么"}]}
+    result = agent.invoke(input=msg,config=config)
     # Print the agent's response
-    #print(result["messages"][-1].content)
+    print(result["messages"][-1].content)
     pass
 
 if __name__ == "__main__":
